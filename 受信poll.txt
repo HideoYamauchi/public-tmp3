@@ -1,0 +1,205 @@
+﻿ * 属性削除の同期通信
+{{{
+//コールバック関数を無効化
+#if 0
+static void
+attrd_erase_cb(xmlNode *msg, int call_id, int rc, xmlNode *output,
+               void *user_data)
+{
+    do_crm_log_unlikely((rc? LOG_NOTICE : LOG_DEBUG),
+                        "Cleared transient attributes: %s "
+                        CRM_XS " xpath=%s rc=%d",
+                        pcmk_strerror(rc), (char *) user_data, rc);
+}
+#endif
+(snip)
+static voidattrd_erase_attrs(){
+    int call_id;
+    char *xpath = crm_strdup_printf(XPATH_TRANSIENT, attrd_cluster->uname);
+    crm_info("Clearing transient attributes from CIB " CRM_XS " xpath=%s",             xpath);
+
+//cib_sycn_callオプションを追加
+    call_id = the_cib->cmds->delete(the_cib, xpath, NULL,
+                                    cib_quorum_override | cib_xpath | cib_sync_call);
+    if (call_id == 0) {
+        crm_info("#### YAMAUCHI attrd_erase_attrs : OK");
+    } else {
+        crm_info("#### YAMAUCHI attrd_erase_attrs : NG");
+    }
+   
+#if 0
+    call_id = the_cib->cmds->delete(the_cib, xpath, NULL,
+                                    cib_quorum_override | cib_xpath);
+    the_cib->cmds->register_callback_full(the_cib, call_id, 120, FALSE, xpath,
+                                          "attrd_erase_cb", attrd_erase_cb,
+                                          free);
+#endif
+}
+(snip)
+}}}
+ * クラスタ通信側
+  * glibのfdのpollingプライオリティはG_PRIORITY_MEDIUM(G_PRIORITY_HIGHの半分)
+   * include/crm/common/mainloop.h(@PM1.1.19)
+{{{
+(snip)
+#  define G_PRIORITY_MEDIUM (G_PRIORITY_HIGH/2)
+(snip)
+}}}
+   * lib/cluster/cpg.c(@PM1.1.19)
+{{{
+(snip)
+gboolean
+cluster_connect_cpg(crm_cluster_t *cluster)
+{
+    int rc = -1;
+    int fd = 0;
+    int retries = 0;
+    uint32_t id = 0;
+    crm_node_t *peer = NULL;
+    cpg_handle_t handle = 0;
+
+    struct mainloop_fd_callbacks cpg_fd_callbacks = {
+        .dispatch = pcmk_cpg_dispatch,
+        .destroy = cluster->destroy,
+    };
+
+    cpg_callbacks_t cpg_callbacks = {
+        .cpg_deliver_fn = cluster->cpg.cpg_deliver_fn,
+        .cpg_confchg_fn = cluster->cpg.cpg_confchg_fn,
+        /* .cpg_deliver_fn = pcmk_cpg_deliver, */
+        /* .cpg_confchg_fn = pcmk_cpg_membership, */
+    };
+
+    cpg_evicted = FALSE;
+    cluster->group.length = 0;
+    cluster->group.value[0] = 0;
+
+    /* group.value is char[128] */
+    strncpy(cluster->group.value, crm_system_name?crm_system_name:"unknown", 127);
+    cluster->group.value[127] = 0;
+    cluster->group.length = 1 + QB_MIN(127, strlen(cluster->group.value));
+
+    cs_repeat(retries, 30, rc = cpg_initialize(&handle, &cpg_callbacks));
+    if (rc != CS_OK) {
+        crm_err("Could not connect to the Cluster Process Group API: %d", rc);
+        goto bail;
+    }
+
+    id = get_local_nodeid(handle);
+    if (id == 0) {
+        crm_err("Could not get local node id from the CPG API");
+        goto bail;
+
+    }
+    cluster->nodeid = id;
+
+    retries = 0;
+    cs_repeat(retries, 30, rc = cpg_join(handle, &cluster->group));
+    if (rc != CS_OK) {
+        crm_err("Could not join the CPG group '%s': %d", crm_system_name, rc);
+        goto bail;
+    }
+
+    rc = cpg_fd_get(handle, &fd);
+    if (rc != CS_OK) {
+        crm_err("Could not obtain the CPG API connection: %d", rc);
+        goto bail;
+    }
+
+    pcmk_cpg_handle = handle;
+    cluster->cpg_handle = handle;
+    mainloop_add_fd("corosync-cpg", G_PRIORITY_MEDIUM, fd, cluster, &cpg_fd_callbacks);
+
+  bail:
+    if (rc != CS_OK) {
+        cpg_finalize(handle);
+        return FALSE;
+    }
+
+    peer = crm_get_peer(id, NULL);
+    crm_update_peer_proc(__FUNCTION__, peer, crm_proc_cpg, ONLINESTATUS);
+    return TRUE;
+}
+(sinp)
+}}}
+ * IPC通信側
+  * glibのfdのpollingプライオリティはG_PRIORITY_DEFAULT(0).下位層にはlibqbが動作。
+   * lib/common/mainloop.c(@PM1.1.19)
+{{{
+(snip)
+static int32_t
+gio_poll_dispatch_update(enum qb_loop_priority p, int32_t fd, int32_t evts,
+                         void *data, qb_ipcs_dispatch_fn_t fn, int32_t add)
+{
+    struct gio_to_qb_poll *adaptor;
+    GIOChannel *channel;
+    int32_t res = 0;
+
+    res = qb_array_index(gio_map, fd, (void **)&adaptor);
+    if (res < 0) {
+        crm_err("Array lookup failed for fd=%d: %d", fd, res);
+        return res;
+    }
+
+    crm_trace("Adding fd=%d to mainloop as adaptor %p", fd, adaptor);
+
+    if (add && adaptor->source) {
+        crm_err("Adaptor for descriptor %d is still in-use", fd);
+        return -EEXIST;
+    }
+    if (!add && !adaptor->is_used) {
+        crm_err("Adaptor for descriptor %d is not in-use", fd);
+        return -ENOENT;
+    }
+
+    /* channel is created with ref_count = 1 */
+    channel = g_io_channel_unix_new(fd);
+    if (!channel) {
+        crm_err("No memory left to add fd=%d", fd);
+        return -ENOMEM;
+    }
+
+    if (adaptor->source) {
+        g_source_remove(adaptor->source);
+        adaptor->source = 0;
+    }
+
+    /* Because unlike the poll() API, glib doesn't tell us about HUPs by default */
+    evts |= (G_IO_HUP | G_IO_NVAL | G_IO_ERR);
+
+    adaptor->fn = fn;
+    adaptor->events = evts;
+    adaptor->data = data;
+    adaptor->p = p;
+    adaptor->is_used++;
+    adaptor->source =
+        g_io_add_watch_full(channel, G_PRIORITY_DEFAULT, evts, gio_read_socket, adaptor,
+                            gio_poll_destroy);
+
+    /* Now that mainloop now holds a reference to channel,
+     * thanks to g_io_add_watch_full(), drop ours from g_io_channel_unix_new().
+     *
+     * This means that channel will be free'd by:
+     * g_main_context_dispatch()
+     *  -> g_source_destroy_internal()
+     *      -> g_source_callback_unref()
+     * shortly after gio_poll_destroy() completes
+     */
+    g_io_channel_unref(channel);
+
+    crm_trace("Added to mainloop with gsource id=%d", adaptor->source);
+    if (adaptor->source > 0) {
+        return 0;
+    }
+
+    return -EINVAL;
+}
+
+static int32_t
+gio_poll_dispatch_add(enum qb_loop_priority p, int32_t fd, int32_t evts,
+                      void *data, qb_ipcs_dispatch_fn_t fn)
+{
+    return gio_poll_dispatch_update(p, fd, evts, data, fn, QB_TRUE);
+}
+(snip)
+}}}
