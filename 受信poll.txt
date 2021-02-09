@@ -1,4 +1,6 @@
-﻿ * 属性削除の同期通信
+Feb 09 07:18:45 [1762] rh76-01        cib:    debug: cib_process_xpath: //node_state[@uname='rh76-02']/transient_attributes was already removed
+
+* 属性削除の同期通信
 {{{
 //コールバック関数を無効化
 #if 0
