@@ -1,0 +1,119 @@
+ * cibの処理順確認の為に暫定修正
+  * cib/callback.c(@PM1.1.19)
+{{{
+(snip)
+voidcib_process_request(xmlNode * request, gboolean force_synchronous, gboolean privileged,
+                    gboolean unused, crm_client_t * cib_client){
+    int call_type = 0;
+    int call_options = 0;
+(snip)
+    } else if (process) {
+        time_t finished = 0;
+        int now = time(NULL);
+        int level = LOG_INFO;
+        const char *section = crm_element_value(request, F_CIB_SECTION);
+        cib_num_local++;
+crm_info("#### YAMAUCHI cib_process_command() call : cib_num_local = %d", cib_num_local);
+crm_log_xml_info(request, "#### YAMAUCHI ####");
+        rc = cib_process_command(request, &op_reply, &result_diff, privileged);
+(snip)
+}}}
+ * 問題発生時のMaster:cibの処理順 - cibの受信処理順もringnumber属性更新後にSlave属性削除となっている
+{{{
+(snip)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: crm_get_peer:	Node 3232238114 is now known as rh76-02
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_peer_update:	Setting #attrd-protocol[rh76-02]: (null) -> 2 from rh76-02
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: write_attribute:	Processed 2 private changes for #attrd-protocol, id=<n/a>, set=(null)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_peer_update:	Setting ringnumber_0[rh76-02]: (null) -> 192.168.10.34 is UP from rh76-02
+Feb 09 18:40:16 [114060] rh76-01      attrd:    debug: write_attribute:	Update: ringnumber_0[rh76-01]=192.168.10.33 is UP (3232238113 3232238113 3232238113 rh76-01)
+Feb 09 18:40:16 [114060] rh76-01      attrd:    debug: write_attribute:	Update: ringnumber_0[rh76-02]=192.168.10.34 is UP (3232238114 3232238114 3232238114 rh76-02)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: write_attribute:	Sent update 1124 with 2 changes for ringnumber_0, id=<n/a>, set=(null)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_peer_update:	Setting ringnumber_1[rh76-02]: (null) -> 192.168.20.34 is UP from rh76-02
+Feb 09 18:40:16 [114060] rh76-01      attrd:    debug: write_attribute:	Update: ringnumber_1[rh76-01]=192.168.20.33 is UP (3232238113 3232238113 3232238113 rh76-01)
+Feb 09 18:40:16 [114060] rh76-01      attrd:    debug: write_attribute:	Update: ringnumber_1[rh76-02]=192.168.20.34 is UP (3232238114 3232238114 3232238114 rh76-02)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: write_attribute:	Sent update 1125 with 2 changes for ringnumber_1, id=<n/a>, set=(null)
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	Forwarding cib_modify operation for section status to all (origin=local/attrd/1124)
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	Forwarding cib_modify operation for section status to all (origin=local/attrd/1125)
+★ringnumber属性更新1回目　: Masterのcib処理順11663
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI cib_process_command() call : cib_num_local = 11663
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####   <cib_command __name__="cib_command" t="cib" cib_async_id="75c2b838-72c7-4008-8a60-faaff54faaf2" cib_op="cib_modify" cib_section="status" cib_callid="1124" cib_user="root" cib_callopt="1048576" cib_clientid="75c2b838-72c7-4008-8a60-faaff54faaf2" cib_clientname="attrd" acl_target="root" src="rh76-01" cib_delegated_from="rh76-01">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####     <cib_calldata>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####       <status>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         <node_state id="3232238113">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           <transient_attributes id="3232238113">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             <instance_attributes id="status-3232238113">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####               <nvpair id="status-3232238113-ringnumber_0" name="ringnumber_0" value="192.168.10.33 is UP"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             </instance_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           </transient_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         </node_state>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         <node_state id="3232238114">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           <transient_attributes id="3232238114">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             <instance_attributes id="status-3232238114">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####               <nvpair id="status-3232238114-ringnumber_0" name="ringnumber_0" value="192.168.10.34 is UP"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             </instance_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           </transient_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         </node_state>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####       </status>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####     </cib_calldata>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####   </cib_command>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	Diff: --- 0.6.5092 2
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	Diff: +++ 0.6.5093 (null)
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	+  /cib:  @num_updates=5093
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	++ /cib/status/node_state[@id='3232238114']:  <transient_attributes id="3232238114"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	++                                              <instance_attributes id="status-3232238114">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	++                                                <nvpair id="status-3232238114-ringnumber_0" name="ringnumber_0" value="192.168.10.34 is UP"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	++                                              </instance_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	++                                            </transient_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	Completed cib_modify operation for section status: OK (rc=0, origin=rh76-01/attrd/1124, version=0.6.5093)
+★ringnumber属性更新1回目　: Masterのcib処理順11664
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI cib_process_command() call : cib_num_local = 11664
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####   <cib_command __name__="cib_command" t="cib" cib_async_id="75c2b838-72c7-4008-8a60-faaff54faaf2" cib_op="cib_modify" cib_section="status" cib_callid="1125" cib_user="root" cib_callopt="1048576" cib_clientid="75c2b838-72c7-4008-8a60-faaff54faaf2" cib_clientname="attrd" acl_target="root" src="rh76-01" cib_delegated_from="rh76-01">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####     <cib_calldata>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####       <status>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         <node_state id="3232238113">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           <transient_attributes id="3232238113">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             <instance_attributes id="status-3232238113">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####               <nvpair id="status-3232238113-ringnumber_1" name="ringnumber_1" value="192.168.20.33 is UP"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             </instance_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           </transient_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         </node_state>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         <node_state id="3232238114">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           <transient_attributes id="3232238114">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             <instance_attributes id="status-3232238114">
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####               <nvpair id="status-3232238114-ringnumber_1" name="ringnumber_1" value="192.168.20.34 is UP"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####             </instance_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####           </transient_attributes>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####         </node_state>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####       </status>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####     </cib_calldata>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####   </cib_command>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	Diff: --- 0.6.5093 2
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	Diff: +++ 0.6.5094 (null)
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	+  /cib:  @num_updates=5094
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	++ /cib/status/node_state[@id='3232238114']/transient_attributes[@id='3232238114']/instance_attributes[@id='status-3232238114']:  <nvpair id="status-3232238114-ringnumber_1" name="ringnumber_1" value="192.168.20.34 is UP"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	Completed cib_modify operation for section status: OK (rc=0, origin=rh76-01/attrd/1125, version=0.6.5094)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_cib_callback:	Update 1124 for ringnumber_0: OK (0)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_cib_callback:	Update 1124 for ringnumber_0[rh76-01]=192.168.10.33 is UP: OK (0)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_cib_callback:	Update 1124 for ringnumber_0[rh76-02]=192.168.10.34 is UP: OK (0)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_cib_callback:	Update 1125 for ringnumber_1: OK (0)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_cib_callback:	Update 1125 for ringnumber_1[rh76-01]=192.168.20.33 is UP: OK (0)
+Feb 09 18:40:16 [114060] rh76-01      attrd:     info: attrd_cib_callback:	Update 1125 for ringnumber_1[rh76-02]=192.168.20.34 is UP: OK (0)
+★Slave属性削除　: Masterのcib処理順11665
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI cib_process_command() call : cib_num_local = 11665
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	#### YAMAUCHI ####   <cib_command __name__="cib_command" t="cib" cib_async_id="dee7a7ff-c649-40e4-a64b-d623f5b42894" cib_op="cib_delete" cib_section="//node_state[@uname=&apos;rh76-02&apos;]/transient_attributes" cib_callid="2" cib_callopt="1048578" cib_clientid="dee7a7ff-c649-40e4-a64b-d623f5b42894" cib_clientname="attrd" acl_target="hacluster" cib_user="hacluster" src="rh76-02" cib_delegated_from="rh76-02"/>
+Feb 09 18:40:16 [114057] rh76-01        cib:    debug: cib_process_xpath:	Processing cib_delete op for //node_state[@uname='rh76-02']/transient_attributes with /cib/status/node_state[2]/transient_attributes
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	Diff: --- 0.6.5094 2
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	Diff: +++ 0.6.5095 (null)
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	-- /cib/status/node_state[@id='3232238114']/transient_attributes[@id='3232238114']
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_perform_op:	+  /cib:  @num_updates=5095
+Feb 09 18:40:16 [114057] rh76-01        cib:     info: cib_process_request:	Completed cib_delete operation for section //node_state[@uname='rh76-02']/transient_attributes: OK (rc=0, origin=rh76-02/attrd/2, version=0.6.5095)
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: do_dc_join_offer_one:	join-2: Processing join_announce request from rh76-02 in state S_INTEGRATION
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: crm_update_peer_join:	do_dc_join_offer_one: Node rh76-02[3232238114] - join-2 phase welcomed -> none
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: join_make_offer:	join-2: Sending offer to rh76-02
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: crm_update_peer_join:	join_make_offer: Node rh76-02[3232238114] - join-2 phase none -> welcomed
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: crm_update_peer_join:	join_make_offer: Node rh76-01[3232238113] - join-2 phase confirmed -> none
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: join_make_offer:	join-2: Sending offer to rh76-01
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: crm_update_peer_join:	join_make_offer: Node rh76-01[3232238113] - join-2 phase none -> welcomed
+Feb 09 18:40:17 [114062] rh76-01       crmd:     info: abort_transition_graph:	Transition aborted: Node join | source=do_dc_join_offer_one:275 complete=true
+(snip)
+}}}
