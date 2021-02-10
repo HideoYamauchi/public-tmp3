@@ -1,0 +1,90 @@
+作業メモ
+ * 簡易構成でも再現する
+  1. 起動後 - DC(rh83-dev01)
+{{{
+[root@rh83-dev01 ~]# crm_mon -rfA1
+Cluster Summary:
+  * Stack: corosync
+  * Current DC: rh83-dev01 (version 2.0.5-46cf48d27) - partition with quorum
+  * Last updated: Wed Feb 10 11:52:57 2021
+  * Last change:  Wed Feb 10 11:52:51 2021 by root via cibadmin on rh83-dev01
+  * 2 nodes configured
+  * 4 resource instances configured
+
+Node List:
+  * Online: [ rh83-dev01 rh83-dev02 ]
+
+Full List of Resources:
+  * Clone Set: stateful-clone [stateful] (promotable):
+    * Masters: [ rh83-dev01 ]
+    * Slaves: [ rh83-dev02 ]
+  * fence1-virsh        (stonith:fence_virsh):   Started rh83-dev02
+  * fence2-virsh        (stonith:fence_virsh):   Started rh83-dev01
+
+Node Attributes:
+  * Node: rh83-dev01:
+    * master-stateful                   : 10        
+  * Node: rh83-dev02:
+    * master-stateful                   : 5         
+
+Migration Summary:
+}}}
+  1. 疑似故障の修正をStateful RAに行いでMasterリソースのmonitorエラーからdemoteエラーを発生
+  1. 故障後
+{{{
+[root@rh83-dev02 ~]# crm_mon -rfA1
+Cluster Summary:
+  * Stack: corosync
+  * Current DC: rh83-dev02 (version 2.0.5-46cf48d27) - partition with quorum
+  * Last updated: Wed Feb 10 11:54:30 2021
+  * Last change:  Wed Feb 10 11:52:51 2021 by root via cibadmin on rh83-dev01
+  * 2 nodes configured
+  * 4 resource instances configured
+
+Node List:
+  * Online: [ rh83-dev02 ]
+  * OFFLINE: [ rh83-dev01 ]
+
+Full List of Resources:
+  * Clone Set: stateful-clone [stateful] (promotable):
+    * Masters: [ rh83-dev02 ]
+    * Stopped: [ rh83-dev01 ]
+  * fence1-virsh        (stonith:fence_virsh):   Started rh83-dev02
+  * fence2-virsh        (stonith:fence_virsh):   Stopped
+
+Node Attributes:
+  * Node: rh83-dev02:
+    * master-stateful                   : 10        
+
+Migration Summary:
+}}}
+　 * ログの抜粋
+{{{
+★DCが移ったSlaveで状態遷移を計算
+
+Feb 10 11:54:19.142 rh83-dev02 pacemaker-schedulerd[4056] (LogNodeActions)      notice:  * Fence (reboot) rh83-dev01 'peer is no longer part of the cluster'
+Feb 10 11:54:19.142 rh83-dev02 pacemaker-schedulerd[4056] (LogAction)   notice:  * Stop       stateful:0     ( Slave rh83-dev01 )   due to node availability
+Feb 10 11:54:19.142 rh83-dev02 pacemaker-schedulerd[4056] (LogAction)   notice:  * Promote    stateful:1     ( Slave -> Master rh83-dev02 )
+Feb 10 11:54:19.142 rh83-dev02 pacemaker-schedulerd[4056] (LogActions)  info: Leave   fence1-virsh      (Started rh83-dev02)
+Feb 10 11:54:19.142 rh83-dev02 pacemaker-schedulerd[4056] (LogAction)   notice:  * Stop       fence2-virsh   (                 rh83-dev01 )   due to node availability
+Feb 10 11:54:19.143 rh83-dev02 pacemaker-schedulerd[4056] (pcmk__log_transition_summary)        warning: Calculated transition 0 (with warnings), saving inputs in /var/lib/pacemaker/pengine/pe-warn-0.bz2
+Feb 10 11:54:19.143 rh83-dev02 pacemaker-controld  [4057] (do_state_transition)         info: State transition S_POLICY_ENGINE -> S_TRANSITION_ENGINE | input=I_PE_SUCCESS cause=C_IPC_MESSAGE origin=handle_response
+Feb 10 11:54:19.144 rh83-dev02 pacemaker-controld  [4057] (do_te_invoke)        info: Processing graph 0 (ref=pe_calc-dc-1612925659-24) derived from /var/lib/pacemaker/pengine/pe-warn-0.bz2
+★priority_delay=0で実行
+Feb 10 11:54:19.144 rh83-dev02 pacemaker-controld  [4057] (te_fence_node)       notice: Requesting fencing (reboot) of node rh83-dev01 | action=1 timeout=60000 priority_delay=0
+Feb 10 11:54:19.144 rh83-dev02 pacemaker-fenced    [4053] (handle_request)      notice: Client pacemaker-controld.4057 wants to fence (reboot) rh83-dev01 using any device
+Feb 10 11:54:19.144 rh83-dev02 pacemaker-fenced    [4053] (initiate_remote_stonith_op)  notice: Requesting peer fencing (reboot) targeting rh83-dev01 | id=2eabc367 state=querying base_timeout=60
+Feb 10 11:54:19.145 rh83-dev02 pacemaker-fenced    [4053] (can_fence_host_with_device)  notice: fence1-virsh is eligible to fence (reboot) rh83-dev01: static-list
+Feb 10 11:54:19.145 rh83-dev02 pacemaker-fenced    [4053] (process_remote_stonith_query)        info: Query result 1 of 1 from rh83-dev02 for rh83-dev01/reboot (1 device) 2eabc367-d644-46ac-a531-a2ea6eddb6e2
+Feb 10 11:54:19.145 rh83-dev02 pacemaker-fenced    [4053] (call_remote_stonith)         info: Total timeout set to 60 for peer's fencing targeting rh83-dev01 for pacemaker-controld.4057|id=2eabc367
+Feb 10 11:54:19.145 rh83-dev02 pacemaker-fenced    [4053] (call_remote_stonith)         notice: Requesting that rh83-dev02 perform 'reboot' action targeting rh83-dev01 | for client pacemaker-controld.4057 (72s, 0s)
+Feb 10 11:54:19.146 rh83-dev02 pacemaker-fenced    [4053] (can_fence_host_with_device)  notice: fence1-virsh is eligible to fence (reboot) rh83-dev01: static-list
+Feb 10 11:54:19.146 rh83-dev02 pacemaker-fenced    [4053] (stonith_fence_get_devices_cb)        info: Found 1 matching device for target 'rh83-dev01'
+Feb 10 11:54:23.137 rh83-dev02 pacemaker-based     [4052] (cib_process_ping)    info: Reporting our current digest to rh83-dev02: 793c0f9e01d8a83a0ab5423cf7f30c44 for 0.14.27 (0x55698c730bb0 0)
+Feb 10 11:54:25.016 rh83-dev02 pacemaker-fenced    [4053] (log_operation)       notice: Operation 'reboot' [4187] (call 4 from pacemaker-controld.2849) targeting rh83-dev01 using fence1-virsh returned 0 (OK)
+★2回目のフェンシングはマージ
+Feb 10 11:54:25.016 rh83-dev02 pacemaker-fenced    [4053] (st_child_done)       notice: Merging fencing action 'reboot' targeting rh83-dev01 originating from client pacemaker-controld.4057 with identical fencing request from client pacemaker-controld.2849
+Feb 10 11:54:25.017 rh83-dev02 pacemaker-fenced    [4053] (log_operation)       notice: Operation 'reboot' [4187] (merged call 3 from pacemaker-controld.4057) targeting rh83-dev01 using fence1-virsh returned 0 (OK)
+Feb 10 11:54:25.017 rh83-dev02 pacemaker-fenced    [4053] (remote_op_done)      notice: Operation 'reboot' targeting rh83-dev01 by rh83-dev02 for pacemaker-controld.2849@rh83-dev01: OK | id=132054b3
+
+}}}
