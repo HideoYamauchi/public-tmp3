@@ -1,0 +1,123 @@
+作業メモ
+ * priotiryの積み上げ
+  * lib/pengine/native.c(@PM2.0.4)
+{{{
+(snip)
+static void
+native_priority_to_node(pe_resource_t * rsc, pe_node_t * node)
+{
+    int priority = 0;
+
+    if (rsc->priority == 0) {
+        return;
+    }
+
+    if (rsc->role == RSC_ROLE_MASTER) {
+        // Promoted instance takes base priority + 1
+        priority = rsc->priority + 1;
+
+    } else {
+        priority = rsc->priority;
+    }
+
+    node->details->priority += priority;
+    pe_rsc_trace(rsc, "Node '%s' now has priority %d with %s'%s' (priority: %d%s)",
+                 node->details->uname, node->details->priority,
+                 rsc->role == RSC_ROLE_MASTER ? "promoted " : "",
+                 rsc->id, rsc->priority,
+                 rsc->role == RSC_ROLE_MASTER ? " + 1" : "");
+
+    /* Priority of a resource running on a guest node is added to the cluster
+     * node as well. */
+    if (node->details->remote_rsc
+        && node->details->remote_rsc->container) {
+        GListPtr gIter = node->details->remote_rsc->container->running_on;
+
+        for (; gIter != NULL; gIter = gIter->next) {
+            pe_node_t *a_node = gIter->data;
+
+            a_node->details->priority += priority;
+            pe_rsc_trace(rsc, "Node '%s' now has priority %d with %s'%s' (priority: %d%s) "
+                         "from guest node '%s'",
+                         a_node->details->uname, a_node->details->priority,
+                         rsc->role == RSC_ROLE_MASTER ? "promoted " : "",
+                         rsc->id, rsc->priority,
+                         rsc->role == RSC_ROLE_MASTER ? " + 1" : "",
+                         node->details->uname);
+        }
+    }
+}
+(snip)
+}}}
+ * fencing_delayの計算
+  * lib/pengine/utils.c(@PM2.0.4)
+{{{
+(snip)
+static int
+node_priority_fencing_delay(pe_node_t * node, pe_working_set_t * data_set)
+{
+    int member_count = 0;
+    int online_count = 0;
+    int top_priority = 0;
+    int lowest_priority = 0;
+    GListPtr gIter = NULL;
+
+    // `priority-fencing-delay` is disabled
+    if (data_set->priority_fencing_delay <= 0) {
+        return 0;
+    }
+
+    /* No need to request a delay if the fencing target is not a normal cluster
+     * member, for example if it's a remote node or a guest node. */
+    if (node->details->type != node_member) {
+        return 0;
+    }
+
+    // No need to request a delay if the fencing target is in our partition
+    if (node->details->online) {
+        return 0;
+    }
+
+    for (gIter = data_set->nodes; gIter != NULL; gIter = gIter->next) {
+        pe_node_t *n =  gIter->data;
+
+        if (n->details->type != node_member) {
+            continue;
+        }
+
+        member_count ++;
+
+        if (n->details->online) {
+            online_count++;
+        }
+
+        if (member_count == 1
+            || n->details->priority > top_priority) {
+            top_priority = n->details->priority;
+        }
+
+        if (member_count == 1
+            || n->details->priority < lowest_priority) {
+            lowest_priority = n->details->priority;
+        }
+    }
+
+    // No need to delay if we have more than half of the cluster members
+    if (online_count > member_count / 2) {
+        return 0;
+    }
+
+    /* All the nodes have equal priority.
+     * Any configured corresponding `pcmk_delay_base/max` will be applied. */
+    if (lowest_priority == top_priority) {
+        return 0;
+    }
+
+    if (node->details->priority < top_priority) {
+        return 0;
+    }
+
+    return data_set->priority_fencing_delay;
+}
+(snip)
+}}}
