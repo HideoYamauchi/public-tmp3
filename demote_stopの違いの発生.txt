@@ -1,0 +1,63 @@
+ * demote/stopの違いの発生
+  * lib/pengine/unpack.c
+{{{
+(snip)
+static void
+unpack_rsc_op_failure(pe_resource_t * rsc, pe_node_t * node, int rc, xmlNode * xml_op, xmlNode ** last_failure,
+                      enum action_fail_response * on_fail, pe_working_set_t * data_set)
+{
+    guint interval_ms = 0;
+    bool is_probe = false;
+    pe_action_t *action = NULL;
+
+(snip)
+    if (!strcmp(task, CRMD_ACTION_STOP)) {
+        resource_location(rsc, node, -INFINITY, "__stop_fail__", data_set);
+
+    } else if (!strcmp(task, CRMD_ACTION_MIGRATE)) {
+        unpack_migrate_to_failure(rsc, node, xml_op, data_set);
+
+    } else if (!strcmp(task, CRMD_ACTION_MIGRATED)) {
+        unpack_migrate_from_failure(rsc, node, xml_op, data_set);
+
+    } else if (!strcmp(task, CRMD_ACTION_PROMOTE)) {
+        rsc->role = RSC_ROLE_MASTER;
+
+    } else if (!strcmp(task, CRMD_ACTION_DEMOTE)) {
+        if (action->on_fail == action_fail_block) {
+            rsc->role = RSC_ROLE_MASTER;
+            rsc->next_role = RSC_ROLE_STOPPED;
+
+        } else if(rc == PCMK_OCF_NOT_RUNNING) {
+            rsc->role = RSC_ROLE_STOPPED;
+
+        } else {
+            /* Staying in master role would put the scheduler and controller
+             * into a loop. Setting slave role is not dangerous because the
+             * resource will be stopped as part of recovery, and any master
+             * promotion will be ordered after that stop.
+             */
+            rsc->role = RSC_ROLE_SLAVE;
+        }
+    }
+
+    if(is_probe && rc == PCMK_OCF_NOT_INSTALLED) {
+        /* leave stopped */
+        pe_rsc_trace(rsc, "Leaving %s stopped", rsc->id);
+        rsc->role = RSC_ROLE_STOPPED;
+
+    } else if (rsc->role < RSC_ROLE_STARTED) {
+        pe_rsc_trace(rsc, "Setting %s active", rsc->id);
+        set_active(rsc);
+    }
+
+    pe_rsc_trace(rsc, "Resource %s: role=%s, unclean=%s, on_fail=%s, fail_role=%s",
+                 rsc->id, role2text(rsc->role),
+                 pcmk__btoa(node->details->unclean),
+                 fail2text(action->on_fail), role2text(action->fail_role));
+
+    if (action->fail_role != RSC_ROLE_STARTED && rsc->next_role < action->fail_role) {
+        rsc->next_role = action->fail_role;
+    }
+(snip)
+}}}
