@@ -1,0 +1,203 @@
+ * startup-fencing=falseは、RHELでは非推奨(RHEL6,RHEL7のみの模様。要ログイン)
+  * https://access.redhat.com/solutions/1295093
+   * 「startup_fencing デバッグ目的でのみfalseに設定する必要があり、falseに設定することは、RedHatによる本番環境での使用ではサポートされていません。」とあり。
+ * startup-fencing=trueの場合は、起動時に一旦ノードはunclean/unseemをTRUE
+  * lib/pengin/unpack.c
+{{{
+(snip)
+static void
+handle_startup_fencing(pe_working_set_t *data_set, pe_node_t *new_node)
+{
+    if ((new_node->details->type == node_remote) && (new_node->details->remote_rsc == NULL)) {
+        /* Ignore fencing for remote nodes that don't have a connection resource
+         * associated with them. This happens when remote node entries get left
+         * in the nodes section after the connection resource is removed.
+         */
+        return;
+    }
+
+    if (pcmk_is_set(data_set->flags, pe_flag_startup_fencing)) {
+        // All nodes are unclean until we've seen their status entry
+        new_node->details->unclean = TRUE;
+
+    } else {
+        // Blind faith ...
+        new_node->details->unclean = FALSE;
+    }
+
+    /* We need to be able to determine if a node's status section
+     * exists or not separate from whether the node is unclean. */
+    new_node->details->unseen = TRUE;
+}
+(snip)
+}}}
+ * その後、cibのnode状態からオンラインなどの状態を決定して、unclean/unseemをクリア
+ * 実際のフェンシング時にuncleanなノードはフェンシングしようとするが、qourumを保持していない間はフェンシングしない。
+  * lib/pacemaker/pcmk_sched_allocate.c
+{{{
+(snip)
+gboolean
+stage6(pe_working_set_t * data_set)
+{
+    pe_action_t *dc_down = NULL;
+    pe_action_t *stonith_op = NULL;
+    gboolean integrity_lost = FALSE;
+    gboolean need_stonith = TRUE;
+    GListPtr gIter;
+    GListPtr stonith_ops = NULL;
+    GList *shutdown_ops = NULL;
+
+    /* Remote ordering constraints need to happen prior to calculating fencing
+     * because it is one more place we will mark the node as dirty.
+     *
+     * A nice side effect of doing them early is that apply_*_ordering() can be
+     * simpler because pe_fence_node() has already done some of the work.
+     */
+    crm_trace("Creating remote ordering constraints");
+    apply_remote_node_ordering(data_set);
+
+    crm_trace("Processing fencing and shutdown cases");
+    if (any_managed_resources(data_set) == FALSE) {
+        crm_notice("Delaying fencing operations until there are resources to manage");
+        need_stonith = FALSE;
+    }
+
+    /* Check each node for stonith/shutdown */
+    for (gIter = data_set->nodes; gIter != NULL; gIter = gIter->next) {
+        pe_node_t *node = (pe_node_t *) gIter->data;
+
+        /* Guest nodes are "fenced" by recovering their container resource,
+         * so handle them separately.
+         */
+        if (pe__is_guest_node(node)) {
+            if (node->details->remote_requires_reset && need_stonith
+                && pe_can_fence(data_set, node)) {
+                fence_guest(node, data_set);
+            }
+            continue;
+        }
+
+        stonith_op = NULL;
+
+        if (node->details->unclean
+            && need_stonith && pe_can_fence(data_set, node)) {
+
+            stonith_op = pe_fence_op(node, NULL, FALSE, "node is unclean", FALSE, data_set);
+            pe_warn("Scheduling Node %s for STONITH", node->details->uname);
+
+            pcmk__order_vs_fence(stonith_op, data_set);
+
+            if (node->details->is_dc) {
+                // Remember if the DC is being fenced
+                dc_down = stonith_op;
+
+            } else {
+
+                if (!pcmk_is_set(data_set->flags, pe_flag_concurrent_fencing)
+                    && (stonith_ops != NULL)) {
+                    /* Concurrent fencing is disabled, so order each non-DC
+                     * fencing in a chain. If there is any DC fencing or
+                     * shutdown, it will be ordered after the last action in the
+                     * chain later.
+                     */
+                    order_actions((pe_action_t *) stonith_ops->data,
+                                  stonith_op, pe_order_optional);
+                }
+
+                // Remember all non-DC fencing actions in a separate list
+                stonith_ops = g_list_prepend(stonith_ops, stonith_op);
+            }
+
+        } else if (node->details->online && node->details->shutdown &&
+                /* TODO define what a shutdown op means for a remote node.
+                 * For now we do not send shutdown operations for remote nodes, but
+                 * if we can come up with a good use for this in the future, we will. */
+                    pe__is_guest_or_remote_node(node) == FALSE) {
+
+            pe_action_t *down_op = sched_shutdown_op(node, data_set);
+
+            if (node->details->is_dc) {
+                // Remember if the DC is being shut down
+                dc_down = down_op;
+            } else {
+                // Remember non-DC shutdowns for later ordering
+                shutdown_ops = g_list_prepend(shutdown_ops, down_op);
+            }
+        }
+
+        if (node->details->unclean && stonith_op == NULL) {
+            integrity_lost = TRUE;
+            pe_warn("Node %s is unclean!", node->details->uname);
+        }
+    }
+
+    if (integrity_lost) {
+        if (!pcmk_is_set(data_set->flags, pe_flag_stonith_enabled)) {
+            pe_warn("YOUR RESOURCES ARE NOW LIKELY COMPROMISED");
+            pe_err("ENABLE STONITH TO KEEP YOUR RESOURCES SAFE");
+
+        } else if (!pcmk_is_set(data_set->flags, pe_flag_have_quorum)) {
+            crm_notice("Cannot fence unclean nodes until quorum is"
+                       " attained (or no-quorum-policy is set to ignore)");
+        }
+    }
+(snip)
+}}}
+  * lib/pengine/utils.c
+{{{
+(snip)
+bool
+pe_can_fence(pe_working_set_t *data_set, pe_node_t *node)
+{
+    if (pe__is_guest_node(node)) {
+        /* Guest nodes are fenced by stopping their container resource. We can
+         * do that if the container's host is either online or fenceable.
+         */
+        pe_resource_t *rsc = node->details->remote_rsc->container;
+
+        for (GList *n = rsc->running_on; n != NULL; n = n->next) {
+            pe_node_t *container_node = n->data;
+
+            if (!container_node->details->online
+                && !pe_can_fence(data_set, container_node)) {
+                return false;
+            }
+        }
+        return true;
+
+    } else if (!pcmk_is_set(data_set->flags, pe_flag_stonith_enabled)) {
+        return false; /* Turned off */
+
+    } else if (!pcmk_is_set(data_set->flags, pe_flag_have_stonith_resource)) {
+        return false; /* No devices */
+
+    } else if (pcmk_is_set(data_set->flags, pe_flag_have_quorum)) {
+        return true;
+
+    } else if (data_set->no_quorum_policy == no_quorum_ignore) {
+        return true;
+
+    } else if(node == NULL) {
+        return false;
+
+    } else if(node->details->online) {
+        crm_notice("We can fence %s without quorum because they're in our membership", node->details->uname);
+        return true;
+    }
+
+    crm_trace("Cannot fence %s", node->details->uname);
+    return false;
+}
+(snip)
+}}}
+ * startup-fencingの抑止による場合は、
+  1. DCとするノード起動
+  1. startup-fencing=falseを実行
+{{{
+[root@rh83-dev01 ~]# pcs property set startup-fencing=false
+}}}
+  1. その他のノードを起動
+  1. startup-fencing=trueを実行
+{{{
+[root@rh83-dev01 ~]# pcs property set startup-fencing=true
+}}}
